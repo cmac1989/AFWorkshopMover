@@ -1,28 +1,61 @@
-function moveAllRowsToWorkshop() {
+function onOpen() {
+    SpreadsheetApp.getUi()
+        .createMenu('Workshop Tools')
+        .addItem('Open Dashboard', 'openDashboard')
+        .addToUi();
+}
+
+function openDashboard() {
+    const html = HtmlService.createHtmlOutputFromFile('Dashboard')
+        .setWidth(900)
+        .setHeight(600);
+    SpreadsheetApp.getUi().showSidebar(html);
+}
+
+// === MAIN FUNCTION ===
+// Collects logs — PREVIEW MODE by default (does NOT update sheet)
+function moveAllRowsToWorkshop(previewOnly = true) {
     const ssUrl = 'https://docs.google.com/spreadsheets/d/16AOaXrNDgAIwfVaXsl3dIs35pkHwtd1exNYomT8ryqs/edit';
     const ss = SpreadsheetApp.openByUrl(ssUrl);
-
     const newHQSheet = ss.getSheetByName("NEW HQ");
     const hqWorkshopSheet = ss.getSheetByName("HQ Workshops 2025");
 
     const allData = newHQSheet.getDataRange().getValues();
     const hqData = hqWorkshopSheet.getDataRange().getValues();
-    const bgColors = hqWorkshopSheet.getRange(1, 1, hqData.length, 1).getBackgrounds(); // ✅ prefetch all backgrounds
+    const bgColors = hqWorkshopSheet.getRange(1, 1, hqData.length, 1).getBackgrounds();
 
     const targetRows = findWorkshopRow(allData, hqData, bgColors);
+    const logEntries = [];
 
     for (let i = 0; i < allData.length; i++) {
         const registrationData = extractWorkshopInfo(allData[i]);
         if (!registrationData) continue;
 
-        const rowIndex = targetRows[i]; // now it's tied to the specific entry
+        const rowIndex = targetRows[i];
+        let logEntry;
+
         if (rowIndex) {
-            simulateWorkshopUpdate(hqWorkshopSheet, rowIndex, registrationData);
+            const message = simulateWorkshopUpdate(hqWorkshopSheet, rowIndex, registrationData);
+            logEntry = {
+                row: rowIndex,
+                type: registrationData.isBalanceUpdate ? 'BALANCE update' : 'NEW registration',
+                details: message
+            };
+        } else {
+            logEntry = {
+                row: 'N/A',
+                type: 'ERROR',
+                details: `No matching target row found for ${registrationData.title} (${registrationData.firstName} ${registrationData.lastName})`
+            };
         }
+
+        logEntries.push(logEntry);
     }
+
+    return logEntries;
 }
 
-
+// === Extracts workshop registration info from sheet data ===
 function extractWorkshopInfo(workshopData) {
     if (!workshopData || !workshopData[0]) return null;
 
@@ -30,14 +63,11 @@ function extractWorkshopInfo(workshopData) {
     let level = null;
     let location = null;
 
-    // Case 1: Matches "Animal Flow Level/Nivel <num> <Location>"
     let match = titleText.match(/Animal Flow\s+(?:Level|Nivel)\s*(\d+)\s+(.+?)\s*\(/i);
-
     if (match) {
         level = parseInt(match[1], 10);
         location = match[2].trim();
     } else {
-        // Case 2: Matches "<Location> L<num>" OR "Virtual L<num>"
         match = titleText.match(/(.+?)\s+L(\d+)/i);
         if (match) {
             location = match[1].trim();
@@ -46,9 +76,9 @@ function extractWorkshopInfo(workshopData) {
     }
 
     const ticketValue = (workshopData[5] || "").trim();
-    if (ticketValue === "Ticket") return null; // skip header or invalid rows
+    if (ticketValue.toUpperCase() === "TICKET") return null;
 
-    const isBalanceUpdate = ticketValue.toUpperCase() === "BALANCE"; // ignore whitespace / case
+    const isBalanceUpdate = ticketValue.toUpperCase() === "BALANCE";
     const workshopTitle = `${location} L${level}`;
 
     return {
@@ -70,56 +100,47 @@ function extractWorkshopInfo(workshopData) {
     };
 }
 
-
+// === Finds the correct rows for updates ===
 function findWorkshopRow(newWorkshopData, sheetData, bgColors) {
-    const nextAvailableRows = {}; // store next available row per title
-    const workshopRowMap = {};    // store all row indexes to return
+    const nextAvailableRows = {};
+    const workshopRowMap = {};
 
     for (let i = 0; i < newWorkshopData.length; i++) {
         const workshopInfo = extractWorkshopInfo(newWorkshopData[i]);
         if (!workshopInfo) continue;
 
-        // If this is a balance update, find the row that matches title + first + last name
+        // Balance updates: find matching row by name and title
         if (workshopInfo.isBalanceUpdate) {
             for (let j = 0; j < sheetData.length; j++) {
-                const sheetTitle = (sheetData[j][0] || "").toString().trim().toLowerCase();
-                const sheetFirst = (sheetData[j][8] || "").toString().trim().toLowerCase();
-                const sheetLast  = (sheetData[j][9] || "").toString().trim().toLowerCase();
-
-                const regTitle = workshopInfo.title.trim().toLowerCase();
-                const regFirst = (workshopInfo.firstName || "").trim().toLowerCase();
-                const regLast  = (workshopInfo.lastName || "").trim().toLowerCase();
-
                 if (
-                    sheetTitle === regTitle &&
-                    sheetFirst === regFirst &&
-                    sheetLast  === regLast
+                    normalize(sheetData[j][0]) === normalize(workshopInfo.title) &&
+                    normalize(sheetData[j][8]) === normalize(workshopInfo.firstName) &&
+                    normalize(sheetData[j][9]) === normalize(workshopInfo.lastName)
                 ) {
                     workshopRowMap[i] = j + 1;
-                    Logger.log(`BALANCE row found for index ${i} at sheet row ${j + 1}`);
                     break;
                 }
             }
-            continue; // skip normal row search
+            continue;
         }
 
-        // Normal workflow: find first available empty row
+        // New registrations: find first available white row
         const title = workshopInfo.title;
         let startRow = nextAvailableRows[title] ? nextAvailableRows[title] + 1 : 1;
 
         for (let j = startRow - 1; j < sheetData.length; j++) {
-            const ticketCell = sheetData[j][5];
+            const ticketCell = (sheetData[j][5] || "").trim();
             const totalCell = sheetData[j][6];
             const bgColor = bgColors[j][0];
 
             if (
-                title === sheetData[j][0] &&
+                normalize(sheetData[j][0]) === normalize(title) &&
                 ticketCell === "" &&
                 totalCell != 25 &&
                 (bgColor === "#ffffff" || bgColor.toLowerCase() === "white")
             ) {
-                workshopRowMap[i] = j + 1; // map *this registration* to that specific row
-                nextAvailableRows[title] = j + 1; // update pointer for next same workshop
+                workshopRowMap[i] = j + 1;
+                nextAvailableRows[title] = j + 1;
                 break;
             }
         }
@@ -128,31 +149,64 @@ function findWorkshopRow(newWorkshopData, sheetData, bgColors) {
     return workshopRowMap;
 }
 
+// === Formats and simulates updates ===
 function simulateWorkshopUpdate(sheet, rowIndex, registrationData) {
-    const row = sheet.getRange(rowIndex, 1, 1, sheet.getLastColumn()).getValues()[0];
-
     if (registrationData.isBalanceUpdate) {
-        const existingPaid = parseFloat(row[18]) || 0; // column 19 = amountPaid
-        const newPaid = parseFloat(registrationData.amountPaid) || 0;
-        const updatedPaid = existingPaid + newPaid;
-
-        const updates = {
-            amountPaid: updatedPaid
-        };
-
-        Logger.log(
-            `Row ${rowIndex} (BALANCE update) would be updated with: ${JSON.stringify(updates)}`
-        );
+        return `BALANCE update → Row ${rowIndex} would add <b>${registrationData.amountPaid}</b> to the Paid column.`;
     } else {
         const updates = {};
         for (const key in registrationData) {
-            if (registrationData[key] !== "" && registrationData[key] !== null) {
-                updates[key] = registrationData[key];
-            }
+            if (registrationData[key] !== "" && registrationData[key] !== null) updates[key] = registrationData[key];
         }
-
-        Logger.log(
-            `Row ${rowIndex} (NEW registration) would be updated with: ${JSON.stringify(updates)}`
-        );
+        return `NEW registration → Row ${rowIndex} would be updated with:<br>` +
+            Object.entries(updates)
+                .map(([k, v]) => `<strong>${k}:</strong> ${v}`)
+                .join('<br>');
     }
+}
+
+// === Sends selected logs via email ===
+function sendSelectedLogsEmail(selectedIndexes) {
+    const logs = moveAllRowsToWorkshop(false);
+    const selectedLogs = selectedIndexes.map(i => logs[i]);
+
+    MailApp.sendEmail({
+        to: Session.getActiveUser().getEmail(),
+        subject: 'Workshop Update Logs',
+        htmlBody: buildHtmlEmail(selectedLogs)
+    });
+    return 'Email sent for selected entries!';
+}
+
+// === Builds HTML Email ===
+function buildHtmlEmail(logEntries) {
+    let html = `<h2 style="font-family:sans-serif;">Workshop Update Logs</h2>
+  <table style="width:100%; border-collapse:collapse; font-family:sans-serif;">
+    <tr style="background-color:#4CAF50; color:white;">
+      <th style="padding:8px;border:1px solid #ddd;">Row</th>
+      <th style="padding:8px;border:1px solid #ddd;">Type</th>
+      <th style="padding:8px;border:1px solid #ddd;">Details</th>
+    </tr>`;
+
+    logEntries.forEach((entry, index) => {
+        const bgColor = index % 2 === 0 ? '#f9f9f9' : '#ffffff';
+        html += `<tr style="background-color:${bgColor};">
+      <td style="padding:8px;border:1px solid #ddd;">${entry.row}</td>
+      <td style="padding:8px;border:1px solid #ddd;">${entry.type}</td>
+      <td style="padding:8px;border:1px solid #ddd;">${entry.details}</td>
+    </tr>`;
+    });
+
+    html += '</table>';
+    return html;
+}
+
+// === Returns data to the HTML dashboard ===
+function getWorkshopLogs() {
+    return moveAllRowsToWorkshop(true);
+}
+
+// === Helper to normalize strings (trim + lowercase) ===
+function normalize(value) {
+    return (value || "").toString().trim().toLowerCase();
 }
