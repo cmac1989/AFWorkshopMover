@@ -1,75 +1,30 @@
-//MAIN FUNCTION
 function moveAllRowsToWorkshop() {
     const ssUrl = 'https://docs.google.com/spreadsheets/d/16AOaXrNDgAIwfVaXsl3dIs35pkHwtd1exNYomT8ryqs/edit';
     const ss = SpreadsheetApp.openByUrl(ssUrl);
 
-    //SPREADSHEETS
     const newHQSheet = ss.getSheetByName("NEW HQ");
     const hqWorkshopSheet = ss.getSheetByName("HQ Workshops 2025");
-    const partnerSheet = ss.getSheetByName("Partners");
 
-    if (!newHQSheet || !hqWorkshopSheet) {
-        Logger.log("One of the sheets was not found!");
-        return;
-    }
-
-    ``//CHECK FOR NEW HQ DATA
     const allData = newHQSheet.getDataRange().getValues();
-    if(!allData) {
-        Logger.log("No data found for New HQ Sheet");
-    }
-
-    //CHECK TO SEE IF HQ DATA IS PRESENT
     const hqData = hqWorkshopSheet.getDataRange().getValues();
-    if(!hqData) {
-        Logger.log("No data found for HQ Workshop Sheet");
-    }
+    const bgColors = hqWorkshopSheet.getRange(1, 1, hqData.length, 1).getBackgrounds(); // ✅ prefetch all backgrounds
 
-    //CHECK TO SEE IF PARTNER DATA IS PRESENT
-    const partnerData = partnerSheet.getDataRange().getValues();
-    if(!partnerData) {
-        Logger.log("No data found for Partners Sheet");
-    }
+    const targetRows = findWorkshopRow(allData, hqData, bgColors);
 
-    if (allData.length === 0 || (allData.length === 1 && allData[0].every(cell => cell === ""))) {
-        Logger.log("No data to move.");
-        return;
-    }
+    for (let i = 0; i < allData.length; i++) {
+        const registrationData = extractWorkshopInfo(allData[i]);
+        if (!registrationData) continue;
 
-    findWorkshopRow(allData, hqData);
-}
-
-//////////////////////
-// HELPER FUNCTIONS //
-//////////////////////
-
-function findWorkshopRow(newWorkshopData, sheetData) {
-    const firstAvailableRows = {};
-
-    for (let i = 0; i < newWorkshopData.length; i++) {
-        const workshopName = extractWorkshopInfo(newWorkshopData[i]);
-        Logger.log(workshopName)
-        Logger.log(firstAvailableRows)
-        // const workshopName = extractWorkshopInfo(newWorkshopData[i][0]);
-        if(firstAvailableRows[workshopName]) continue;
-        for (let j = 0; j < sheetData.length; j++) {
-            const ticketCell = sheetData[j][5];
-            const totalCell = sheetData[j][6];
-            // Logger.log(sheetData[j][0]) - this data is correct
-            if (workshopName == sheetData[j][0] && ticketCell == "" && totalCell != 25) {
-                firstAvailableRows[workshopName] = j + 1
-                break;
-            }
+        const rowIndex = targetRows[i]; // now it's tied to the specific entry
+        if (rowIndex) {
+            simulateWorkshopUpdate(hqWorkshopSheet, rowIndex, registrationData);
         }
     }
-    Logger.log(firstAvailableRows);
-    return firstAvailableRows;
 }
 
+
 function extractWorkshopInfo(workshopData) {
-    if (!workshopData || !workshopData[0]) {
-        return {};
-    }
+    if (!workshopData || !workshopData[0]) return null;
 
     const titleText = workshopData[0];
     let level = null;
@@ -89,19 +44,16 @@ function extractWorkshopInfo(workshopData) {
             level = parseInt(match[2], 10);
         }
     }
-    if (workshopData[5] == "Ticket") {
-        return null;
-    }
-    if (workshopData[5] == "BALANCE") {
-        // Logger.log(workshopData[19]);
-        return workshopData[19];
-    }
 
+    const ticketValue = (workshopData[5] || "").trim();
+    if (ticketValue === "Ticket") return null; // skip header or invalid rows
+
+    const isBalanceUpdate = ticketValue.toUpperCase() === "BALANCE"; // ignore whitespace / case
     const workshopTitle = `${location} L${level}`;
 
-    const registrationData = {
+    return {
         title: workshopTitle,
-        ticket: workshopData[5],
+        ticket: ticketValue,
         transactionNumber: workshopData[7],
         firstName: workshopData[8],
         lastName: workshopData[9],
@@ -114,9 +66,93 @@ function extractWorkshopInfo(workshopData) {
         customerNotes: workshopData[17],
         amountPaid: workshopData[18],
         balance: workshopData[19],
-    }
-    return JSON.stringify(registrationData);
+        isBalanceUpdate: isBalanceUpdate,
+    };
 }
 
 
+function findWorkshopRow(newWorkshopData, sheetData, bgColors) {
+    const nextAvailableRows = {}; // store next available row per title
+    const workshopRowMap = {};    // store all row indexes to return
 
+    for (let i = 0; i < newWorkshopData.length; i++) {
+        const workshopInfo = extractWorkshopInfo(newWorkshopData[i]);
+        if (!workshopInfo) continue;
+
+        // If this is a balance update, find the row that matches title + first + last name
+        if (workshopInfo.isBalanceUpdate) {
+            for (let j = 0; j < sheetData.length; j++) {
+                const sheetTitle = (sheetData[j][0] || "").toString().trim().toLowerCase();
+                const sheetFirst = (sheetData[j][8] || "").toString().trim().toLowerCase();
+                const sheetLast  = (sheetData[j][9] || "").toString().trim().toLowerCase();
+
+                const regTitle = workshopInfo.title.trim().toLowerCase();
+                const regFirst = (workshopInfo.firstName || "").trim().toLowerCase();
+                const regLast  = (workshopInfo.lastName || "").trim().toLowerCase();
+
+                if (
+                    sheetTitle === regTitle &&
+                    sheetFirst === regFirst &&
+                    sheetLast  === regLast
+                ) {
+                    workshopRowMap[i] = j + 1;
+                    Logger.log(`BALANCE row found for index ${i} at sheet row ${j + 1}`);
+                    break;
+                }
+            }
+            continue; // skip normal row search
+        }
+
+        // Normal workflow: find first available empty row
+        const title = workshopInfo.title;
+        let startRow = nextAvailableRows[title] ? nextAvailableRows[title] + 1 : 1;
+
+        for (let j = startRow - 1; j < sheetData.length; j++) {
+            const ticketCell = sheetData[j][5];
+            const totalCell = sheetData[j][6];
+            const bgColor = bgColors[j][0];
+
+            if (
+                title === sheetData[j][0] &&
+                ticketCell === "" &&
+                totalCell != 25 &&
+                (bgColor === "#ffffff" || bgColor.toLowerCase() === "white")
+            ) {
+                workshopRowMap[i] = j + 1; // map *this registration* to that specific row
+                nextAvailableRows[title] = j + 1; // update pointer for next same workshop
+                break;
+            }
+        }
+    }
+
+    return workshopRowMap;
+}
+
+function simulateWorkshopUpdate(sheet, rowIndex, registrationData) {
+    const row = sheet.getRange(rowIndex, 1, 1, sheet.getLastColumn()).getValues()[0];
+
+    if (registrationData.isBalanceUpdate) {
+        const existingPaid = parseFloat(row[18]) || 0; // column 19 = amountPaid
+        const newPaid = parseFloat(registrationData.amountPaid) || 0;
+        const updatedPaid = existingPaid + newPaid;
+
+        const updates = {
+            amountPaid: updatedPaid
+        };
+
+        Logger.log(
+            `Row ${rowIndex} (BALANCE update) would be updated with: ${JSON.stringify(updates)}`
+        );
+    } else {
+        const updates = {};
+        for (const key in registrationData) {
+            if (registrationData[key] !== "" && registrationData[key] !== null) {
+                updates[key] = registrationData[key];
+            }
+        }
+
+        Logger.log(
+            `Row ${rowIndex} (NEW registration) would be updated with: ${JSON.stringify(updates)}`
+        );
+    }
+}
