@@ -17,13 +17,36 @@
             z-index: 9999;
             display: none;
         }
+        div.nb-2 {
+            margin-bottom: 40px;
+        }
+
+        table {
+            width: 100%;
+        }
+
+        th, td {
+            vertical-align: top;
+        }
+
+        td:nth-child(4) { /* Details column */
+            width: 65%; /* fix to a stable width */
+        }
+
+        .toggle-details {
+            padding: 0;
+            margin-top: 4px;
+        }
     </style>
+
 </head>
 <body class="p-3">
-<h3>Workshop Dashboard</h3>
-<div class="mb-2">
+<h3 style="margin-bottom:10px; margin-top:10px">Workshop Dashboard</h3>
+<div class="mb-2" style="margin-bottom:30px !important">
     <button id="refresh" class="btn btn-primary btn-sm">Refresh</button>
     <button id="sendEmail" class="btn btn-success btn-sm">Send Email</button>
+    <button id="applyUpdates" class="btn btn-warning btn-sm">Apply Updates</button>
+    <button id="revertChanges" class="btn btn-secondary btn-sm">Revert Changes</button>
 </div>
 
 <div id="logs"></div>
@@ -68,22 +91,48 @@
 
             if (typeof details === 'object') {
                 details = Object.entries(details)
-                    .map(([k,v]) => `<strong>${k}:</strong> ${v}`)
+                    .map(([k, v]) => `<strong>${k}:</strong> ${v}`)
                     .join('<br>');
             }
 
-            html += `<tr>
-      <td style="text-align:center;">
-        <input type="checkbox" class="log-checkbox" data-index="${index}" checked>
-      </td>
-      <td>${entry.rowIndex || 'N/A'}</td>
-      <td>${entry.type}</td>
-      <td>${details}</td>
-    </tr>`;
+            // Extract first/last name for preview (if available)
+            const nameMatch = details.match(/<strong>firstName:<\/strong>\s*([^<]+).*<strong>lastName:<\/strong>\s*([^<]+)/s);
+            const firstName = nameMatch ? nameMatch[1].trim() : '';
+            const lastName = nameMatch ? nameMatch[2].trim() : '';
+
+            // Preview includes name + first 3 lines of details
+            const previewLines = details.split('<br>').slice(0, 3).join('<br>');
+            const preview = `<strong>${firstName} ${lastName}</strong><br>${previewLines}`;
+
+            html += `
+      <tr>
+        <td style="text-align:center;">
+          <input type="checkbox" class="log-checkbox" data-index="${index}" checked>
+        </td>
+        <td>${entry.rowIndex || 'N/A'}</td>
+        <td>${entry.type}</td>
+        <td>
+          <div class="preview">${preview}</div>
+          <div class="full-details" style="display:none;">${details}</div>
+          <button class="btn btn-link btn-sm toggle-details">Show more</button>
+        </td>
+      </tr>`;
         });
 
         html += '</tbody></table>';
         document.getElementById('logs').innerHTML = html;
+
+        // Add toggle functionality for each row
+        document.querySelectorAll('.toggle-details').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const full = btn.previousElementSibling;
+                const preview = full.previousElementSibling;
+                const isHidden = full.style.display === 'none';
+                full.style.display = isHidden ? 'block' : 'none';
+                preview.style.display = isHidden ? 'none' : 'block';
+                btn.textContent = isHidden ? 'Show less' : 'Show more';
+            });
+        });
     }
 
     document.getElementById('refresh').addEventListener('click', renderLogs);
@@ -102,8 +151,56 @@
         }).sendSelectedLogsEmail(selectedIndexes);
     });
 
+    document.getElementById('applyUpdates').addEventListener('click', () => {
+        const selectedIndexes = Array.from(document.querySelectorAll('.log-checkbox'))
+            .filter(cb => cb.checked)
+            .map(cb => parseInt(cb.dataset.index));
+
+        if (selectedIndexes.length === 0) {
+            alert('Select at least one entry to update.');
+            return;
+        }
+
+        // Confirmation prompt
+        const confirmApply = confirm(`Are you sure you want to apply updates for ${selectedIndexes.length} selected entries?`);
+        if (!confirmApply) return;
+
+        showSpinner();
+
+        google.script.run
+            .withSuccessHandler(msg => {
+                hideSpinner();
+                alert(msg);
+            })
+            .withFailureHandler(err => {
+                hideSpinner();
+                alert('Error: ' + err.message);
+            })
+            .updateSelectedRows(selectedIndexes);
+    });
+
+    document.getElementById('revertChanges').addEventListener('click', () => {
+        const confirmRevert = confirm('Are you sure you want to revert the last batch of changes? This will restore the sheet to its previous state.');
+        if (!confirmRevert) return;
+
+        showSpinner();
+
+        google.script.run
+            .withSuccessHandler(msg => {
+                hideSpinner();
+                alert(msg);
+            })
+            .withFailureHandler(err => {
+                hideSpinner();
+                alert('Error: ' + err.message);
+            })
+            .revertLastChanges();
+    });
+
+
     // Initial load
     renderLogs();
 </script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
