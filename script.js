@@ -404,5 +404,5 @@ function revertLastChanges() {
     });
 
     cache.remove('backupData');
-    return 'Selected rows restored from backup successfully.';
+    return 'Selected rows have been restored from backup successfully.';
 }
