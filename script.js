@@ -48,7 +48,6 @@ function moveAllRowsToWorkshop(previewOnly = true) {
                 type: registrationData.isBalanceUpdate ? 'BALANCE update' : 'NEW registration',
                 details: message
             };
-
         } else {
             logEntry = {
                 row: 'N/A',
@@ -63,7 +62,6 @@ function moveAllRowsToWorkshop(previewOnly = true) {
     return logEntries;
 }
 
-// === Extracts workshop registration info from sheet data ===
 // === Extracts workshop registration info from sheet data ===
 function extractWorkshopInfo(workshopData) {
     if (!workshopData || !workshopData[0]) return null;
@@ -190,7 +188,6 @@ function findWorkshopRow(newWorkshopData, sheetData, bgColors) {
     return workshopRowMap;
 }
 
-
 // --- Helper: Normalize & remove accents ---
 function removeAccents(str) {
     return (str || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -201,10 +198,8 @@ function isLooselyMatchingTitle(a, b) {
     const cleanA = removeAccents(a).replace(/[^a-z0-9\s]/g, " ");
     const cleanB = removeAccents(b).replace(/[^a-z0-9\s]/g, " ");
 
-    // Quick exact/partial check first
     if (cleanA.includes(cleanB) || cleanB.includes(cleanA)) return true;
 
-    // Token-based partial matching
     const tokensA = cleanA.split(/\s+/).filter(t => t.length > 2);
     const tokensB = cleanB.split(/\s+/).filter(t => t.length > 2);
     let matchCount = 0;
@@ -215,10 +210,8 @@ function isLooselyMatchingTitle(a, b) {
 
     const similarity = matchCount / Math.max(tokensA.length, tokensB.length);
 
-    // If at least 40% of tokens overlap, call it a match
     if (similarity > 0.4) return true;
 
-    // ✅ Add fallback to handle “Lausanne Switzerland” vs “Lausanne”
     const mainWordA = extractMainLocation(cleanA);
     const mainWordB = extractMainLocation(cleanB);
     return mainWordA && mainWordB && mainWordA === mainWordB;
@@ -232,8 +225,6 @@ function extractMainLocation(text) {
     );
     return words.length ? words[0] : null;
 }
-
-
 
 // === Formats and simulates updates ===
 function simulateWorkshopUpdate(sheet, rowIndex, registrationData) {
@@ -253,7 +244,7 @@ function simulateWorkshopUpdate(sheet, rowIndex, registrationData) {
 
 // === Sends selected logs via email ===
 function sendSelectedLogsEmail(selectedIndexes) {
-    const logs = moveAllRowsToWorkshop(false);
+    const logs = moveAllRowsToWorkshop(true);
     const selectedLogs = selectedIndexes.map(i => logs[i]);
 
     MailApp.sendEmail({
@@ -261,6 +252,7 @@ function sendSelectedLogsEmail(selectedIndexes) {
         subject: 'Workshop Update Logs',
         htmlBody: buildHtmlEmail(selectedLogs)
     });
+
     return 'Email sent for selected entries!';
 }
 
@@ -300,58 +292,56 @@ function normalize(value) {
 // === Writes actual updates to HQ sheet and colors row green ===
 function applyWorkshopUpdate(sheet, rowIndex, registrationData) {
     const range = sheet.getRange(rowIndex, 1, 1, sheet.getLastColumn());
-    const rowValues = sheet.getRange(rowIndex, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const rowValues = range.getValues()[0];
 
-    // Determine total cost based on workshop title
-    const title = (workshopData.title || "").toUpperCase();
-    workshopData.totalCost = title.includes("L2") || title.includes("L3") ? 795 : 695;
+    const isL1 = registrationData.title?.toUpperCase().includes("L1");
+    const isL2 = registrationData.title?.toUpperCase().includes("L2");
 
-    // BALANCE update: add to Paid column (assumed column 19 → index 18)
+    registrationData.totalCost = registrationData.title.toUpperCase().includes("L2") || registrationData.title.toUpperCase().includes("L3") ? 795 : 695;
+
     if (registrationData.isBalanceUpdate) {
-        const paidCol = 19; // adjust if needed
+        const paidCol = 19;
         const currentPaid = parseFloat(rowValues[paidCol - 1]) || 0;
         const newPaid = currentPaid + parseFloat(registrationData.amountPaid || 0);
         sheet.getRange(rowIndex, paidCol).setValue(newPaid);
     } else {
-        // Regular registration update: selectively write only populated fields
         const fieldMap = {
-            title: 1,
-            ticket: 6,
-            transactionNumber: 8,
-            firstName: 9,
-            lastName: 10,
-            email: 11,
-            date: 13,
-            totalCost: 14,
-            coupon: 15,
-            couponCode: 16,
-            affiliate: 17,
-            customerNotes: 18,
-            amountPaid: 19,
-            balance: 20,
-            waiver: 23,
-            resides: 32,
-            phoneNumber: 34,
-            metaData: 38,
-            isEmailSame: 40,
-            fullName: 41,
-            attendeeEmail: 42
+            title: 1, ticket: 6, transactionNumber: 8, firstName: 9, lastName: 10,
+            email: 11, date: 13, totalCost: 14, coupon: 15, couponCode: 16,
+            affiliate: 17, customerNotes: 18, amountPaid: 19, balance: 20,
+            waiver: 23, resides: 32, phoneNumber: 34, metaData: 38,
+            isEmailSame: 40, fullName: 41, attendeeEmail: 42
         };
 
         for (const key in fieldMap) {
-            if (registrationData[key] !== "" && registrationData[key] !== null && registrationData[key] !== undefined) {
+            if (registrationData[key] !== "" && registrationData[key] != null) {
                 sheet.getRange(rowIndex, fieldMap[key]).setValue(registrationData[key]);
             }
         }
+
+        if (registrationData.metaData && registrationData.title) {
+            if (isL1) {
+                const meta = parseMetaData(registrationData.metaData);
+                if (meta) {
+                    const metaFieldMap = { travel: 33, source: 35, certPlan: 36, certCategory: 37 };
+                    for (const key in metaFieldMap) {
+                        if (meta[key] && meta[key] !== "") sheet.getRange(rowIndex, metaFieldMap[key]).setValue(meta[key]);
+                    }
+                }
+            } else if (isL2) {
+                const metaL2 = parseMetaDataL2(registrationData.metaData);
+                if (metaL2) {
+                    const metaFieldMapL2 = { travel: 33, locationDate: 32, certStatus: 35 };
+                    for (const key in metaFieldMapL2) {
+                        if (metaL2[key] && metaL2[key] !== "") sheet.getRange(rowIndex, metaFieldMapL2[key]).setValue(metaL2[key]);
+                    }
+                }
+            }
+        }
+
+        sheet.getRange(rowIndex, 1, 1, sheet.getLastColumn()).setBackground('#c6efce');
+        sheet.getRange(rowIndex, 1, 1, sheet.getLastColumn()).setFontSize(10).setFontColor('#000000');
     }
-
-    // Paint updated row green
-    sheet.getRange(rowIndex, 1, 1, sheet.getLastColumn()).setBackground('#c6efce');
-
-    // Enforce proper cell formatting
-    sheet.getRange(rowIndex, 1, 1, sheet.getLastColumn())
-        .setFontSize(10)
-        .setFontColor('#000000');
 }
 
 function updateSelectedRows(selectedIndexes) {
@@ -360,13 +350,9 @@ function updateSelectedRows(selectedIndexes) {
     const ss = SpreadsheetApp.openByUrl(ssUrl);
     const hqSheet = ss.getSheetByName("HQ Workshops 2025");
 
-// SET PREVIEW MODE HERE
-
-    // Now perform updates
-    const logs = moveAllRowsToWorkshop(false); // true = preview mode (just to get data)
+    const logs = moveAllRowsToWorkshop(false);
     const selectedLogs = selectedIndexes.map(i => logs[i]);
 
-// Backup only the selected rows
     const backupRows = selectedIndexes.map(i => logs[i].row).filter(r => r && r !== 'N/A');
     const backupData = backupRows.map(r => ({
         row: r,
@@ -378,9 +364,7 @@ function updateSelectedRows(selectedIndexes) {
     selectedLogs.forEach(entry => {
         if (entry.row && entry.row !== 'N/A') {
             const rowIndex = entry.row;
-            const details = entry.details || '';
-            hqSheet.getRange(rowIndex, 1, 1, hqSheet.getLastColumn())
-                .setBackground('#ccffcc'); // visually mark updated row
+            hqSheet.getRange(rowIndex, 1, 1, hqSheet.getLastColumn()).setBackground('#ccffcc');
             hqSheet.getRange(rowIndex, hqSheet.getLastColumn()).setNote(`Updated ${new Date().toLocaleString()}`);
         }
     });
@@ -388,6 +372,22 @@ function updateSelectedRows(selectedIndexes) {
     return `${selectedLogs.length} rows updated successfully. You can revert within 1 hour.`;
 }
 
+function parseMetaData(metaString) {
+    if (!metaString) return null;
+    const parts = metaString.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/).map(s => s.trim());
+    let certPlan = (parts[3] || "").split(":")[0].trim();
+    return { source: parts[2] || "", certPlan, certCategory: parts[4] || "", travel: parts[parts.length - 1] || "" };
+}
+
+function parseMetaDataL2(metaString) {
+    if (!metaString) return null;
+    const parts = metaString.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/).map(s => s.trim());
+    if (parts.length < 5) return null;
+    const certStatus = parts[parts.length - 2] || "";
+    const travel = parts[parts.length - 1] || "";
+    const locationDate = parts.slice(2, parts.length - 2).join(", ").trim();
+    return { travel, locationDate, certStatus };
+}
 
 function revertLastChanges() {
     const cache = CacheService.getScriptCache();
@@ -406,6 +406,3 @@ function revertLastChanges() {
     cache.remove('backupData');
     return 'Selected rows restored from backup successfully.';
 }
-
-
-
